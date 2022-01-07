@@ -1,10 +1,15 @@
 #include <Arduino.h>
 
+// TODO: Separate functionalities into private libraries
+
 //begin DEFINITIONS
 #define LED_PIN 13
 #define BUTTON_PIN 2
 #define BUTTON_HOLD_DIFF_MS 500
 //end DEFINITIONS
+
+#define GET(state, x) (bool)(state & x)
+#define SET(state, x, value) (value ? state |= x : state &= ~x)
 
 struct Led {
     int pin;
@@ -17,9 +22,12 @@ struct Led {
 
 template<typename TContext>
 struct Button {
+    static const uint8_t IS_HIGH = 0b00000001;
+    static const uint8_t IS_BEING_HELD = 0b00000010;
+
     int m_pin = -1;
     uint32_t downStartTime = 0;
-    int isDown = false;
+    uint8_t state = 0b00000000;
     TContext& m_context;
 
     explicit Button(
@@ -39,33 +47,39 @@ struct Button {
     }
 
     void listen() {
-        auto prevIsDown = isDown;
-        isDown = digitalRead(m_pin);
+        auto prevIsHigh = GET(state, IS_HIGH);
+        auto isHigh = GET(SET(state, IS_HIGH, digitalRead(m_pin)), IS_HIGH);
 
-        if (!prevIsDown && isDown) {
+        if (!prevIsHigh && isHigh) {
             onDown();
-        } else if (prevIsDown && isDown && (millis() - downStartTime > BUTTON_HOLD_DIFF_MS)) {
-            onHold();
-        } else if (prevIsDown && !isDown) {
+        } else if (prevIsHigh && isHigh && !GET(state, IS_BEING_HELD) && (millis() - downStartTime > BUTTON_HOLD_DIFF_MS)) {
+            onStartHolding();
+        } else if (prevIsHigh && !isHigh) {
             onUp();
         }
     }
 
 private:
+#pragma region handlers
     void(*m_onClick)(const TContext&);
-    void(*m_onHold)(const TContext&);
-    void(*m_onRelease)(const TContext&);
-
     void onClick() {
         if (m_onClick) m_onClick(m_context);
     }
 
+    void(*m_onHold)(const TContext&);
     void onHold() {
         if (m_onHold) m_onHold(m_context);
     }
 
+    void(*m_onRelease)(const TContext&);
     void onRelease() {
         if (m_onRelease) m_onRelease(m_context);
+    }
+#pragma endregion handlers
+
+    void onStartHolding() {
+        SET(state, IS_BEING_HELD, true);
+        onHold();
     }
 
     void onDown() {
@@ -75,6 +89,9 @@ private:
 
     void onUp() {
         Serial.println("button up");
+        SET(state, IS_HIGH, false);
+        SET(state, IS_BEING_HELD, false);
+
         auto releaseTime = millis();
         if (releaseTime - downStartTime <= BUTTON_HOLD_DIFF_MS) onClick();
         else onRelease();
@@ -90,6 +107,14 @@ struct Program {
         [](const Program &program) {
             Serial.println("clicked");
             program.led13.toggle();
+        },
+        [](const Program& program){
+            Serial.println("held");
+            program.led13.turnOn();
+        },
+        [](const Program& program){
+            Serial.println("released");
+            program.led13.turnOff();
         }
     );
 

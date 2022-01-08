@@ -40,25 +40,18 @@ struct {
     }
 } logger;
 
-struct Led {
-    int pin;
-    explicit Led(int pin): pin(pin) { pinMode(pin, OUTPUT); }
+class IStayUpdated { virtual void update() = 0; };
 
-    void turnOn() const { digitalWrite(pin, HIGH); }
-    void turnOff() const { digitalWrite(pin, LOW); }
-    void toggle() const { digitalWrite(pin, !digitalRead(pin)); }
+struct Led {
+    int _pin;
+    explicit Led(int pin): _pin(pin) { pinMode(pin, OUTPUT); }
+
+    void turnOn() const { digitalWrite(_pin, HIGH); }
+    void turnOff() const { digitalWrite(_pin, LOW); }
+    void toggle() const { digitalWrite(_pin, !digitalRead(_pin)); }
 };
 
-template<typename TContext> struct Button {
-    static const uint16_t BUTTON_HOLD_DIFF_MS = 500;
-    static const uint8_t IS_HIGH = 0b00000001;
-    static const uint8_t IS_BEING_HELD = 0b00000010;
-
-    int m_pin = -1;
-    uint32_t downStartTime = 0;
-    uint8_t state = 0b00000000;
-    TContext& m_context;
-
+template<typename TContext> struct Button : IStayUpdated {
     explicit Button(
             int pin,
             TContext& context,
@@ -66,65 +59,102 @@ template<typename TContext> struct Button {
             void(*onHold)(TContext&) = nullptr,
             void(*onRelease)(TContext&) = nullptr
         ):
-        m_pin(pin),
-        m_context(context),
-        m_onClick(onClick),
-        m_onHold(onHold),
-        m_onRelease(onRelease)
+            _pin(pin),
+            _context(context),
+            _onClick(onClick),
+            _onHold(onHold),
+            _onRelease(onRelease)
     {
         pinMode(pin, INPUT);
     }
 
-    void listen() {
-        auto prevIsHigh = bwGet(state, IS_HIGH);
-        auto isHigh = bwGet(bwSet(state, IS_HIGH, digitalRead(m_pin)), IS_HIGH);
+    void update() override {
+        auto prevIsHigh = bwGet(_state, IS_HIGH);
+        auto isHigh = bwGet(bwSet(_state, IS_HIGH, digitalRead(_pin)), IS_HIGH);
 
         if (!prevIsHigh && isHigh) onDown();
-        else if (prevIsHigh && isHigh && !bwGet(state, IS_BEING_HELD) && (getMillisDiff(millis(), downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
+        else if (prevIsHigh && isHigh && !bwGet(_state, IS_BEING_HELD) && (getMillisDiff(millis(), _downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
         else if (prevIsHigh && !isHigh) onUp();
     }
 
 private:
+    static const uint16_t BUTTON_HOLD_DIFF_MS = 500;
+    static const uint8_t IS_HIGH = 0b00000001;
+    static const uint8_t IS_BEING_HELD = 0b00000010;
+
+    int _pin = -1;
+    uint32_t _downStartTime = 0;
+    uint8_t _state = 0b00000000;
+    TContext& _context;
+
 #pragma region handlers
-    void(*m_onClick)(TContext&);
+    void(*_onClick)(TContext&);
     void onClick() {
-        if (m_onClick) m_onClick(m_context);
+        if (_onClick) _onClick(_context);
     }
 
-    void(*m_onHold)(TContext&);
+    void(*_onHold)(TContext&);
     void onHold() {
-        if (m_onHold) m_onHold(m_context);
+        if (_onHold) _onHold(_context);
     }
 
-    void(*m_onRelease)(TContext&);
+    void(*_onRelease)(TContext&);
     void onRelease() {
-        if (m_onRelease) m_onRelease(m_context);
+        if (_onRelease) _onRelease(_context);
     }
 #pragma endregion handlers
 
     void onStartHolding() {
-        bwSet(state, IS_BEING_HELD, true);
+        bwSet(_state, IS_BEING_HELD, true);
         onHold();
     }
 
     void onDown() {
-        downStartTime = millis();
+        _downStartTime = millis();
         logger.info("button down");
     }
 
     void onUp() {
         logger.info("button up");
-        bwSet(state, IS_HIGH, false);
-        bwSet(state, IS_BEING_HELD, false);
+        bwSet(_state, IS_HIGH, false);
+        bwSet(_state, IS_BEING_HELD, false);
 
         auto releaseTime = millis();
-        if (getMillisDiff(releaseTime, downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
+        if (getMillisDiff(releaseTime, _downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
         else onRelease();
-
     }
 };
 
-struct ServoRotator {
+struct ServoRotator: IStayUpdated {
+    explicit ServoRotator(const int pin): _pin{pin} {
+        _servo.attach(pin);
+        _servo.write(CLOSED_DEGREES);
+    }
+
+    void open() {
+        _servo.write(OPENED_DEGREES);
+        bwSet(state, IS_OPEN, true);
+    }
+
+    template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
+        open();
+        bwSet(state, IS_TIMED, true);
+        _openedTime = millis();
+        _closeTimePeriodMs =  timePeriodMs;
+    }
+
+    void close() {
+        logger.info("closing");
+        bwSet(state, IS_OPEN, false);
+        bwSet(state, IS_TIMED, false);
+        _servo.write(CLOSED_DEGREES);
+    }
+
+    void update() override {
+        if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && getMillisDiff(millis(), _openedTime) >= _closeTimePeriodMs) close();
+    }
+
+private:
     static const uint16_t DEFAULT_OPEN_TIME_MS = 2000;
     static const uint8_t OPENED_DEGREES = 180;
     static const uint8_t CLOSED_DEGREES = 0;
@@ -132,45 +162,15 @@ struct ServoRotator {
     static const uint8_t IS_OPEN = 0b00000001;
     static const uint8_t IS_TIMED = 0b00000010;
 
-    int m_pin = 0;
-
-    uint32_t openedTime = 0;
-    uint32_t closeTimePeriodMs = 0;
-
-    Servo servo;
+    Servo _servo;
     uint8_t state = 0b00000000;
-
-    explicit ServoRotator(const int pin): m_pin{pin} {
-        servo.attach(pin);
-        servo.write(CLOSED_DEGREES);
-    }
-
-    void open() {
-        servo.write(OPENED_DEGREES);
-        bwSet(state, IS_OPEN, true);
-    }
-
-    template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
-        open();
-        bwSet(state, IS_TIMED, true);
-        openedTime = millis();
-        closeTimePeriodMs =  timePeriodMs;
-    }
-
-    void close() {
-        logger.info("closing");
-        bwSet(state, IS_OPEN, false);
-        bwSet(state, IS_TIMED, false);
-        servo.write(CLOSED_DEGREES);
-    }
-
-    void listen() {
-        if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && getMillisDiff(millis(), openedTime) >= closeTimePeriodMs) close();
-    }
+    int _pin = 0;
+    uint32_t _openedTime = 0;
+    uint32_t _closeTimePeriodMs = 0;
 };
 
 struct Program {
-    Led redLed = Led{13};
+    Led redLed{13};
     ServoRotator servoRotator{9};
     Button<Program> rotatorButton{
             2,
@@ -196,13 +196,13 @@ struct Program {
         Serial.begin(9600);
     }
 
-    void run() {
-        rotatorButton.listen();
-        servoRotator.listen();
+    void act() {
+        rotatorButton.update();
+        servoRotator.update();
     }
 };
 
 Program* program;
 
 __attribute__((unused)) void setup() { program = new Program(); }
-__attribute__((unused)) void loop() { program->run(); }
+__attribute__((unused)) void loop() { program->act(); }

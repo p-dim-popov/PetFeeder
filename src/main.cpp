@@ -6,6 +6,7 @@
 
 #define bwGet(state, x) (bool)(state & x)
 #define bwSet(state, x, value) (value ? state |= x : state &= ~x)
+#define getMillisDiff(ms, prevMs) ((unsigned long)(ms - prevMs))
 
 struct {
     static void println(const char level, const char* arg) {
@@ -23,7 +24,7 @@ struct {
      *  - debug
      */
     uint8_t level = 3;
-    bool debugOn = true;
+    bool debugOn = false;
 
     void info(const char* arg = "") const {
         if (level >= 3) println('i', arg);
@@ -48,8 +49,7 @@ struct Led {
     void toggle() const { digitalWrite(pin, !digitalRead(pin)); }
 };
 
-template<typename TContext>
-struct Button {
+template<typename TContext> struct Button {
     static const uint16_t BUTTON_HOLD_DIFF_MS = 500;
     static const uint8_t IS_HIGH = 0b00000001;
     static const uint8_t IS_BEING_HELD = 0b00000010;
@@ -80,7 +80,7 @@ struct Button {
         auto isHigh = bwGet(bwSet(state, IS_HIGH, digitalRead(m_pin)), IS_HIGH);
 
         if (!prevIsHigh && isHigh) onDown();
-        else if (prevIsHigh && isHigh && !bwGet(state, IS_BEING_HELD) && (millis() - downStartTime > BUTTON_HOLD_DIFF_MS)) onStartHolding();
+        else if (prevIsHigh && isHigh && !bwGet(state, IS_BEING_HELD) && (getMillisDiff(millis(), downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
         else if (prevIsHigh && !isHigh) onUp();
     }
 
@@ -118,14 +118,14 @@ private:
         bwSet(state, IS_BEING_HELD, false);
 
         auto releaseTime = millis();
-        if (releaseTime - downStartTime <= BUTTON_HOLD_DIFF_MS) onClick();
+        if (getMillisDiff(releaseTime, downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
         else onRelease();
 
     }
 };
 
 struct ServoRotator {
-    static const uint16_t DEFAULT_OPEN_TIME_MS = 1000;
+    static const uint16_t DEFAULT_OPEN_TIME_MS = 2000;
     static const uint8_t OPENED_DEGREES = 180;
     static const uint8_t CLOSED_DEGREES = 0;
 
@@ -134,7 +134,8 @@ struct ServoRotator {
 
     int m_pin = 0;
 
-    uint32_t closeTime = 0;
+    uint32_t openedTime = 0;
+    uint32_t closeTimePeriodMs = 0;
 
     Servo servo;
     uint8_t state = 0b00000000;
@@ -149,11 +150,11 @@ struct ServoRotator {
         bwSet(state, IS_OPEN, true);
     }
 
-    template<typename TTimePeriodMs = uint16_t>
-    void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
+    template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
         open();
         bwSet(state, IS_TIMED, true);
-        closeTime = millis() + timePeriodMs;
+        openedTime = millis();
+        closeTimePeriodMs =  timePeriodMs;
     }
 
     void close() {
@@ -164,7 +165,7 @@ struct ServoRotator {
     }
 
     void listen() {
-        if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && millis() >= closeTime) close();
+        if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && getMillisDiff(millis(), openedTime) >= closeTimePeriodMs) close();
     }
 };
 

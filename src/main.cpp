@@ -9,10 +9,11 @@
 #define getMillisDiff(ms, prevMs) ((unsigned long)(ms - prevMs))
 
 struct {
-    static void println(const char level, const char* arg) {
+    static void println(const char level, const char* arg, bool appendNewLine) {
         Serial.print(level);
         Serial.print("/");
-        Serial.println(arg);
+        if (appendNewLine) Serial.println(arg);
+        else Serial.print(arg);
     }
 
     /**
@@ -24,23 +25,67 @@ struct {
      *  - debug
      */
     uint8_t level = 3;
-    bool debugOn = false;
+    bool debugOn = true;
 
-    void info(const char* arg = "") const {
-        if (level >= 3) println('i', arg);
+    void info(const char* arg = "", bool appendNewLine = true) const {
+        if (level >= 3) println('i', arg, appendNewLine);
     }
-    void warn(const char* arg = "") const {
-        if (level >= 2) println('w', arg);
+    void warn(const char* arg = "", bool appendNewLine = true) const {
+        if (level >= 2) println('w', arg, appendNewLine);
     }
-    void error(const char* arg = "") const {
-        if (level >= 1) println('e', arg);
+    void error(const char* arg = "", bool appendNewLine = true) const {
+        if (level >= 1) println('e', arg, appendNewLine);
     }
-    void debug(const char* arg = "") const {
-        if (debugOn) println('d', arg);
+    void debug(const char* arg = "", bool appendNewLine = true) const {
+        if (debugOn) println('d', arg, appendNewLine);
     }
 } logger;
 
-class IStayUpdated { virtual void update() = 0; };
+struct Time {
+    uint8_t milliseconds = 0;
+    uint8_t seconds = 0;
+    uint8_t minutes = 0;
+    uint8_t hours = 0;
+
+    uint32_t toMs() const {
+        return (hours * 3600000) + (minutes * 60000) + (seconds * 1000) + milliseconds;
+    }
+
+    static Time now();
+    static Time fromMs(unsigned long long duration);
+    static void set(const Time& time);
+
+private:
+    static uint32_t prevMillis;
+    static uint32_t timeElapsed;
+};
+
+Time started;
+
+uint32_t Time::prevMillis = millis();
+uint32_t Time::timeElapsed = 0;
+
+Time Time::now() {
+    auto currentMillis = millis();
+    timeElapsed += getMillisDiff(currentMillis, prevMillis);
+    prevMillis = currentMillis;
+    return Time::fromMs(started.toMs() + timeElapsed);
+}
+
+Time Time::fromMs(unsigned long long duration) {
+    Time time = {};
+    time.milliseconds = (duration % 1000) / 100;
+    time.seconds = (duration / 1000) % 60;
+    time.minutes = (duration / 60000) % 60;
+    time.hours = (duration / 3600000) % 24;
+    return time;
+}
+
+void Time::set(const Time &time) {
+    started = time;
+}
+
+class IReact { virtual void react() = 0; };
 
 struct Led {
     int _pin;
@@ -51,7 +96,7 @@ struct Led {
     void toggle() const { digitalWrite(_pin, !digitalRead(_pin)); }
 };
 
-template<typename TContext> struct Button : IStayUpdated {
+template<typename TContext> struct Button : IReact {
     explicit Button(
             int pin,
             TContext& context,
@@ -68,7 +113,7 @@ template<typename TContext> struct Button : IStayUpdated {
         pinMode(pin, INPUT);
     }
 
-    void update() override {
+    void react() override {
         auto prevIsHigh = bwGet(_state, IS_HIGH);
         auto isHigh = bwGet(bwSet(_state, IS_HIGH, digitalRead(_pin)), IS_HIGH);
 
@@ -125,7 +170,7 @@ private:
     }
 };
 
-struct ServoRotator: IStayUpdated {
+struct ServoRotator: IReact {
     explicit ServoRotator(const int pin): _pin{pin} {
         _servo.attach(pin);
         _servo.write(CLOSED_DEGREES);
@@ -150,7 +195,7 @@ struct ServoRotator: IStayUpdated {
         _servo.write(CLOSED_DEGREES);
     }
 
-    void update() override {
+    void react() override {
         if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && getMillisDiff(millis(), _openedTime) >= _closeTimePeriodMs) close();
     }
 
@@ -179,6 +224,7 @@ struct Program {
                 logger.debug("clicked");
                 program.redLed.toggle();
                 program.servoRotator.openTimed();
+                Time::set(Time::fromMs(1641669327069)); // 19:15:28
             },
             [](Program &program) {
                 logger.debug("held");
@@ -197,8 +243,16 @@ struct Program {
     }
 
     void act() {
-        rotatorButton.update();
-        servoRotator.update();
+        rotatorButton.react();
+        servoRotator.react();
+        auto time = Time::now();
+        String res;
+        res.concat(time.hours);
+        res.concat(":");
+        res.concat(time.minutes);
+        res.concat(":");
+        res.concat(time.seconds);
+        logger.debug(res.c_str());
     }
 };
 

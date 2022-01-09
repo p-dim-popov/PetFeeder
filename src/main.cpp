@@ -4,9 +4,13 @@
 
 // TODO: Separate functionalities into private libraries
 
-#define bwGet(state, x) (bool)(state & x)
-#define bwSet(state, x, value) (value ? state |= x : state &= ~x)
-#define getMillisDiff(ms, prevMs) ((unsigned long)(ms - prevMs))
+#define bwGet(state, x) ((bool)((state) & (x)))
+#define bwSet(state, x, value) ((value) ? (state |= (x)) : (state &= ~(x)))
+#define bwIndexToBit(index) [index](){ unsigned long p = 1; for(unsigned long __i__ = 0; __i__ < index; __i__++) p *= 2; return p; }()
+#define getMillisDiff(ms, prevMs) ((unsigned long)((ms) - (prevMs)))
+
+template<class T> struct IComparable { virtual int8_t compareTo(const T*) const = 0; };
+template<class T> struct IEquatable { virtual bool equals(const T*) const = 0; };
 
 struct {
     static void println(const char level, const char* arg, bool appendNewLine) {
@@ -41,7 +45,7 @@ struct {
     }
 } logger;
 
-struct Time {
+struct Time: IEquatable<Time>, IComparable<Time> {
     uint8_t milliseconds = 0;
     uint8_t seconds = 0;
     uint8_t minutes = 0;
@@ -51,8 +55,34 @@ struct Time {
         return (hours * 3600000) + (minutes * 60000) + (seconds * 1000) + milliseconds;
     }
 
+    bool equals(const Time* other) const override {
+        if (other == nullptr) return false;
+        return hours == other->hours
+               && minutes == other->minutes
+               && seconds == other->seconds
+               && milliseconds == other->milliseconds;
+    }
+
+    int8_t compareTo(const Time* other) const override {
+        if (other == nullptr) return 1;
+        if (equals(other)) return 0;
+
+        return (hours > other->hours
+                 || (hours == other->hours && minutes > other->minutes)
+                 || (hours == other->hours && minutes == other->minutes && seconds > other->seconds)
+                 || (hours == other->hours && minutes == other->minutes && seconds == other->seconds && milliseconds > other->milliseconds))
+                 ? 1 : -1;
+    }
+
+    bool isBetween(const Time& lowerBound, const Time& upperBound) const {
+        const auto lowerBoundResult = lowerBound.compareTo(this);
+        const auto upperBoundResult = upperBound.compareTo(this);
+        return (lowerBoundResult >= 0) && (upperBoundResult >= 0);
+    }
+
     static Time now();
     static Time fromMs(unsigned long long duration);
+
     static void set(const Time& time);
 
 private:
@@ -87,13 +117,111 @@ void Time::set(const Time &time) {
 
 class IReact { virtual void react() = 0; };
 
+template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
+    const Time time;
+    void(*task)(TContext&);
+    explicit DayJob(const Time time, void(*task)(TContext&)): time{time}, task{task} {}
+
+    bool equals(const DayJob<TContext>* other) const override { return time.equals(&other->time); }
+};
+
+template<typename TItem, unsigned int size> struct Array {
+    TItem* list[size];
+    unsigned int count;
+
+    explicit Array(): list{{}}, count{0} {}
+
+    bool add(TItem* item);
+    bool removeAt(unsigned int index);
+    TItem* at(unsigned int index);
+    unsigned int indexOf(const IEquatable<TItem>* item);
+};
+
+template<typename TItem, unsigned int size>
+bool Array<TItem, size>::add(TItem *item) {
+    if (count == size) return false;
+
+    list[count++] = item;
+    return true;
+}
+
+template<typename TItem, unsigned int size>
+unsigned int Array<TItem, size>::indexOf(const IEquatable<TItem> *item) {
+    for (unsigned int i = 0; i < count; ++i) {
+        const auto currentItem = list[i];
+        if (item->equals(currentItem)) return i;
+    }
+    return -1;
+}
+
+template<typename TItem, unsigned int size>
+TItem *Array<TItem, size>::at(unsigned int index) {
+    return list[index];
+}
+
+template<typename TItem, unsigned int size>
+bool Array<TItem, size>::removeAt(unsigned int index) {
+    // TODO: checks
+    for (auto i = index; i < count; ++i) {
+        list[i] = list[i + 1];
+    }
+    return true;
+}
+
+template<typename TContext> struct DayJobsScheduler: IReact {
+    static const unsigned char MAX_JOBS = 10;
+
+    explicit DayJobsScheduler(TContext& context): _context(context) {}
+
+    void react() override {
+        const auto timeNow = Time::now();
+        const auto oneMinuteAfterTimeNow = Time::fromMs(timeNow.toMs() + 60000);
+
+        for (unsigned int i = 0; i < _jobs.count; ++i) {
+            const auto job = _jobs.at(i);
+            const auto stateBit = bwIndexToBit(i);
+            const auto isDone = bwGet(_checkList, stateBit);
+            const auto isTimeForDoingTheJob = job->time.isBetween(timeNow, oneMinuteAfterTimeNow);
+            if (isTimeForDoingTheJob && !isDone) {
+                    job->task(_context);
+                    bwSet(_checkList, stateBit, true);
+            } else if (!isTimeForDoingTheJob && isDone) bwSet(_checkList, stateBit, false);
+        }
+    }
+
+    bool schedule(DayJob<TContext>* job) {
+        return _jobs.add(job);
+    }
+
+    bool unschedule(DayJob<TContext>* job) {
+        const auto index = _jobs.indexOf(job);
+        return unschedule(index);
+    }
+    bool unschedule(unsigned char index) {
+        const auto prevCount = _jobs.count;
+        if (!_jobs.removeAt(index)) return false;
+
+        for (int i = index; i < prevCount; ++i) {
+            const auto nextIndex = i + 1;
+            bwSet(_checkList, bwIndexToBit(i), bwGet(_checkList, bwIndexToBit(nextIndex)));
+        }
+        return true;
+    }
+
+private:
+    TContext& _context;
+    uint32_t _checkList = 0b0;
+    Array<DayJob<TContext>, MAX_JOBS> _jobs;
+};
+
 struct Led {
     int _pin;
     explicit Led(int pin): _pin(pin) { pinMode(pin, OUTPUT); }
 
+    bool isOn() const { return digitalRead(_pin); }
     void turnOn() const { digitalWrite(_pin, HIGH); }
     void turnOff() const { digitalWrite(_pin, LOW); }
-    void toggle() const { digitalWrite(_pin, !digitalRead(_pin)); }
+    void toggle() const { digitalWrite(_pin, !isOn()); }
 };
 
 template<typename TContext> struct Button : IReact {
@@ -215,7 +343,9 @@ private:
 };
 
 struct Program {
-    Led redLed{13};
+    DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ logger.debugOn = false; }};
+    uint8_t timesRotatorButtonClicked = 0;
+    const Led redLed{13};
     ServoRotator servoRotator{9};
     Button<Program> rotatorButton{
             2,
@@ -224,12 +354,16 @@ struct Program {
                 logger.debug("clicked");
                 program.redLed.toggle();
                 program.servoRotator.openTimed();
-                Time::set(Time::fromMs(1641669327069)); // 19:15:28
+                if (program.timesRotatorButtonClicked == 2) {
+                     Time::set(Time::fromMs(1641669327069)); // 19:15:28
+                }
+                program.jobsScheduler.schedule(&program.testJob);
             },
             [](Program &program) {
                 logger.debug("held");
                 program.redLed.turnOn();
                 program.servoRotator.open();
+                program.jobsScheduler.unschedule(&program.testJob);
             },
             [](Program &program) {
                 logger.debug("released");
@@ -237,6 +371,7 @@ struct Program {
                 program.servoRotator.close();
             }
     };
+    DayJobsScheduler<Program> jobsScheduler{*this};
 
     Program() {
         Serial.begin(9600);
@@ -245,6 +380,7 @@ struct Program {
     void act() {
         rotatorButton.react();
         servoRotator.react();
+        jobsScheduler.react();
         auto time = Time::now();
         String res;
         res.concat(time.hours);
@@ -252,7 +388,11 @@ struct Program {
         res.concat(time.minutes);
         res.concat(":");
         res.concat(time.seconds);
-        logger.debug(res.c_str());
+        static String x;
+        if (x != res) {
+            x = res;
+            logger.debug(res.c_str());
+        }
     }
 };
 

@@ -46,7 +46,9 @@ struct {
     template<typename TBus>
     bool get(TBus state, TBus stateBit) { return state & stateBit; }
     template<typename TBus>
-    TBus set(TBus& state, TBus stateBit, bool value) { return value ? (state |= stateBit) : (state &= ~stateBit); }
+    TBus set(TBus state, TBus stateBit, bool value) {
+        return (value) ? state | stateBit : state & ~stateBit;
+    }
     template<typename TBus, typename TIndex>
     TBus indexAsBit(TIndex index) {
         TBus result = 1;
@@ -90,40 +92,35 @@ struct Time: IEquatable<Time>, IComparable<Time> {
         return (lowerBoundResult >= 0) && (upperBoundResult >= 0);
     }
 
-    static Time now();
-    static Time fromMs(unsigned long long duration);
+    static Time now() {
+        auto currentMillis = millis();
+        timeElapsed += getMillisDiff(currentMillis, prevMillis);
+        prevMillis = currentMillis;
+        return Time::fromMs(Time::started.toMs() + timeElapsed);
+    }
 
-    static void set(const Time& time);
+    static Time fromMs(unsigned long long duration) {
+        Time time = {};
+        time.milliseconds = (duration % 1000) / 100;
+        time.seconds = (duration / 1000) % 60;
+        time.minutes = (duration / 60000) % 60;
+        time.hours = (duration / 3600000) % 24;
+        return time;
+    }
+
+    static void set(const Time &time) {
+        started = time;
+    }
 
 private:
+    static Time started;
     static uint32_t prevMillis;
     static uint32_t timeElapsed;
 };
 
-Time started;
-
-uint32_t Time::prevMillis = millis();
+Time Time::started;
+uint32_t Time::prevMillis = 0;
 uint32_t Time::timeElapsed = 0;
-
-Time Time::now() {
-    auto currentMillis = millis();
-    timeElapsed += getMillisDiff(currentMillis, prevMillis);
-    prevMillis = currentMillis;
-    return Time::fromMs(started.toMs() + timeElapsed);
-}
-
-Time Time::fromMs(unsigned long long duration) {
-    Time time = {};
-    time.milliseconds = (duration % 1000) / 100;
-    time.seconds = (duration / 1000) % 60;
-    time.minutes = (duration / 60000) % 60;
-    time.hours = (duration / 3600000) % 24;
-    return time;
-}
-
-void Time::set(const Time &time) {
-    started = time;
-}
 
 class IReact { virtual void react() = 0; };
 
@@ -135,48 +132,57 @@ template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
     bool equals(const DayJob<TContext>* other) const override { return time.equals(&other->time); }
 };
 
-template<typename TItem, unsigned int size> struct Array {
-    TItem* list[size];
-    unsigned int count;
+template<typename TItem, unsigned short size> struct Array {
+    TItem* list[size]{};
+    unsigned short count = 0;
 
-    explicit Array(): list{{}}, count{0} {}
+    virtual bool add(TItem *item) {
+        if (count == size) return false;
 
-    bool add(TItem* item);
-    bool removeAt(unsigned int index);
-    TItem* at(unsigned int index);
-    unsigned int indexOf(const IEquatable<TItem>* item);
+        list[count++] = item;
+        return true;
+    }
+
+    bool removeAt(int index) {
+        if (!count || index < 0 || index >= count) return false;
+        for (auto i = index; i < count; ++i) {
+            list[i] = list[i + 1];
+        }
+        return true;
+    }
+
+    TItem* at(int index) {
+        if (index < 0 || index >= count) return nullptr;
+
+        return list[index];
+    }
+
+    long indexOf(const IEquatable<TItem>* item) {
+        for (int i = 0; i < count; ++i) {
+            const auto currentItem = list[i];
+            if (item->equals(currentItem)) return i;
+        }
+        return -1;
+    }
+
+    TItem* find(IEquatable<TItem>* item) {
+        for (unsigned int i = 0; i < count; ++i) {
+            const auto current = list[i];
+            if (item->equals(current)) return current;
+        }
+
+        return nullptr;
+    }
 };
 
-template<typename TItem, unsigned int size>
-bool Array<TItem, size>::add(TItem *item) {
-    if (count == size) return false;
+template<typename TItem, unsigned int size> struct Set: Array<TItem, size> {
+    bool add(TItem *item) override {
+        if (Array<TItem, size>::count == size) return false;
+        if (Array<TItem, size>::find(item)) return false;
 
-    list[count++] = item;
-    return true;
-}
-
-template<typename TItem, unsigned int size>
-unsigned int Array<TItem, size>::indexOf(const IEquatable<TItem> *item) {
-    for (unsigned int i = 0; i < count; ++i) {
-        const auto currentItem = list[i];
-        if (item->equals(currentItem)) return i;
+        return Array<TItem, size>::add(item);
     }
-    return -1;
-}
-
-template<typename TItem, unsigned int size>
-TItem *Array<TItem, size>::at(unsigned int index) {
-    return list[index];
-}
-
-template<typename TItem, unsigned int size>
-bool Array<TItem, size>::removeAt(unsigned int index) {
-    // TODO: checks
-    for (auto i = index; i < count; ++i) {
-        list[i] = list[i + 1];
-    }
-    return true;
-}
+};
 
 template<typename TContext> struct DayJobsScheduler: IReact {
     static const unsigned char MAX_JOBS = 10;
@@ -194,8 +200,8 @@ template<typename TContext> struct DayJobsScheduler: IReact {
             const auto isTimeForDoingTheJob = job->time.isBetween(timeNow, oneMinuteAfterTimeNow);
             if (isTimeForDoingTheJob && !isDone) {
                     job->task(_context);
-                    BitWise.set(_checkList, stateBit, true);
-            } else if (!isTimeForDoingTheJob && isDone) BitWise.set(_checkList, stateBit, false);
+                    _checkList = BitWise.set(_checkList, stateBit, true);
+            } else if (!isTimeForDoingTheJob && isDone) _checkList = BitWise.set(_checkList, stateBit, false);
         }
     }
 
@@ -207,12 +213,12 @@ template<typename TContext> struct DayJobsScheduler: IReact {
         const auto index = _jobs.indexOf(job);
         return unschedule(index);
     }
-    bool unschedule(unsigned char index) {
+    bool unschedule(int index) {
         const auto prevCount = _jobs.count;
         if (!_jobs.removeAt(index)) return false;
 
         for (auto i = index; i < prevCount; ++i)
-            BitWise.set(
+            _checkList = BitWise.set(
                     _checkList,
                     BitWise.indexAsBit<uint32_t>(i),
                     BitWise.get(_checkList, BitWise.indexAsBit<uint32_t>(i + 1)
@@ -223,7 +229,7 @@ template<typename TContext> struct DayJobsScheduler: IReact {
 private:
     TContext& _context;
     uint32_t _checkList = 0b0;
-    Array<DayJob<TContext>, MAX_JOBS> _jobs;
+    Set<DayJob<TContext>, MAX_JOBS> _jobs;
 };
 
 struct Led {
@@ -255,7 +261,8 @@ template<typename TContext> struct Button : IReact {
 
     void react() override {
         auto prevIsHigh = BitWise.get(_state, IS_HIGH);
-        auto isHigh = BitWise.get(BitWise.set(_state, IS_HIGH, digitalRead(_pin)), IS_HIGH);
+        _state = BitWise.set(_state, IS_HIGH, digitalRead(_pin));
+        auto isHigh = BitWise.get(_state, IS_HIGH);
 
         if (!prevIsHigh && isHigh) onDown();
         else if (prevIsHigh && isHigh && !BitWise.get(_state, IS_BEING_HELD) && (getMillisDiff(millis(), _downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
@@ -290,7 +297,7 @@ private:
 #pragma endregion handlers
 
     void onStartHolding() {
-        BitWise.set(_state, IS_BEING_HELD, true);
+        _state = BitWise.set(_state, IS_BEING_HELD, true);
         onHold();
     }
 
@@ -301,8 +308,8 @@ private:
 
     void onUp() {
         logger.info("button up");
-        BitWise.set(_state, IS_HIGH, false);
-        BitWise.set(_state, IS_BEING_HELD, false);
+        _state = BitWise.set(_state, IS_HIGH, false);
+        _state = BitWise.set(_state, IS_BEING_HELD, false);
 
         auto releaseTime = millis();
         if (getMillisDiff(releaseTime, _downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
@@ -311,27 +318,27 @@ private:
 };
 
 struct ServoRotator: IReact {
-    explicit ServoRotator(const int pin): _pin{pin} {
+    explicit ServoRotator(const int pin) {
         _servo.attach(pin);
         _servo.write(CLOSED_DEGREES);
     }
 
     void open() {
         _servo.write(OPENED_DEGREES);
-        BitWise.set(state, IS_OPEN, true);
+        state = BitWise.set(state, IS_OPEN, true);
     }
 
     template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
         open();
-        BitWise.set(state, IS_TIMED, true);
+        state = BitWise.set(state, IS_TIMED, true);
         _openedTime = millis();
         _closeTimePeriodMs =  timePeriodMs;
     }
 
     void close() {
         logger.info("closing");
-        BitWise.set(state, IS_OPEN, false);
-        BitWise.set(state, IS_TIMED, false);
+        state = BitWise.set(state, IS_OPEN, false);
+        state = BitWise.set(state, IS_TIMED, false);
         _servo.write(CLOSED_DEGREES);
     }
 
@@ -349,14 +356,12 @@ private:
 
     Servo _servo;
     uint8_t state = 0b00000000;
-    int _pin = 0;
     uint32_t _openedTime = 0;
     uint32_t _closeTimePeriodMs = 0;
 };
 
 struct Program {
     DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ logger.debugOn = false; }};
-    uint8_t timesRotatorButtonClicked = 0;
     const Led redLed{13};
     ServoRotator servoRotator{9};
     Button<Program> rotatorButton{
@@ -366,16 +371,14 @@ struct Program {
                 logger.debug("clicked");
                 program.redLed.toggle();
                 program.servoRotator.openTimed();
-                if (program.timesRotatorButtonClicked == 2) {
-                     Time::set(Time::fromMs(1641669327069)); // 19:15:28
-                }
-                program.jobsScheduler.schedule(&program.testJob);
+                // Time::set(Time::fromMs(1641669327069)); // 19:15:28
+                if (program.jobsScheduler.schedule(&program.testJob)) logger.info("scheduled");
             },
             [](Program &program) {
                 logger.debug("held");
                 program.redLed.turnOn();
                 program.servoRotator.open();
-                program.jobsScheduler.unschedule(&program.testJob);
+                if (program.jobsScheduler.unschedule(&program.testJob)) logger.info("unscheduled");
             },
             [](Program &program) {
                 logger.debug("released");

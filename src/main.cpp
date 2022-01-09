@@ -4,9 +4,6 @@
 
 // TODO: Separate functionalities into private libraries
 
-#define bwGet(state, x) ((bool)((state) & (x)))
-#define bwSet(state, x, value) ((value) ? (state |= (x)) : (state &= ~(x)))
-#define bwIndexToBit(index) [index](){ unsigned long p = 1; for(unsigned long __i__ = 0; __i__ < index; __i__++) p *= 2; return p; }()
 #define getMillisDiff(ms, prevMs) ((unsigned long)((ms) - (prevMs)))
 
 template<class T> struct IComparable { virtual int8_t compareTo(const T*) const = 0; };
@@ -44,6 +41,19 @@ struct {
         if (debugOn) println('d', arg, appendNewLine);
     }
 } logger;
+
+struct {
+    template<typename TBus>
+    bool get(TBus state, TBus stateBit) { return state & stateBit; }
+    template<typename TBus>
+    TBus set(TBus& state, TBus stateBit, bool value) { return value ? (state |= stateBit) : (state &= ~stateBit); }
+    template<typename TBus, typename TIndex>
+    TBus indexAsBit(TIndex index) {
+        TBus result = 1;
+        for (TIndex i = 0; i < index; i++) result *= 2;
+        return result;
+    }
+} BitWise;
 
 struct Time: IEquatable<Time>, IComparable<Time> {
     uint8_t milliseconds = 0;
@@ -179,13 +189,13 @@ template<typename TContext> struct DayJobsScheduler: IReact {
 
         for (unsigned int i = 0; i < _jobs.count; ++i) {
             const auto job = _jobs.at(i);
-            const auto stateBit = bwIndexToBit(i);
-            const auto isDone = bwGet(_checkList, stateBit);
+            const auto stateBit = BitWise.indexAsBit<uint32_t>(i);
+            const auto isDone = BitWise.get(_checkList, stateBit);
             const auto isTimeForDoingTheJob = job->time.isBetween(timeNow, oneMinuteAfterTimeNow);
             if (isTimeForDoingTheJob && !isDone) {
                     job->task(_context);
-                    bwSet(_checkList, stateBit, true);
-            } else if (!isTimeForDoingTheJob && isDone) bwSet(_checkList, stateBit, false);
+                    BitWise.set(_checkList, stateBit, true);
+            } else if (!isTimeForDoingTheJob && isDone) BitWise.set(_checkList, stateBit, false);
         }
     }
 
@@ -201,10 +211,12 @@ template<typename TContext> struct DayJobsScheduler: IReact {
         const auto prevCount = _jobs.count;
         if (!_jobs.removeAt(index)) return false;
 
-        for (int i = index; i < prevCount; ++i) {
-            const auto nextIndex = i + 1;
-            bwSet(_checkList, bwIndexToBit(i), bwGet(_checkList, bwIndexToBit(nextIndex)));
-        }
+        for (auto i = index; i < prevCount; ++i)
+            BitWise.set(
+                    _checkList,
+                    BitWise.indexAsBit<uint32_t>(i),
+                    BitWise.get(_checkList, BitWise.indexAsBit<uint32_t>(i + 1)
+                    ));
         return true;
     }
 
@@ -242,11 +254,11 @@ template<typename TContext> struct Button : IReact {
     }
 
     void react() override {
-        auto prevIsHigh = bwGet(_state, IS_HIGH);
-        auto isHigh = bwGet(bwSet(_state, IS_HIGH, digitalRead(_pin)), IS_HIGH);
+        auto prevIsHigh = BitWise.get(_state, IS_HIGH);
+        auto isHigh = BitWise.get(BitWise.set(_state, IS_HIGH, digitalRead(_pin)), IS_HIGH);
 
         if (!prevIsHigh && isHigh) onDown();
-        else if (prevIsHigh && isHigh && !bwGet(_state, IS_BEING_HELD) && (getMillisDiff(millis(), _downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
+        else if (prevIsHigh && isHigh && !BitWise.get(_state, IS_BEING_HELD) && (getMillisDiff(millis(), _downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
         else if (prevIsHigh && !isHigh) onUp();
     }
 
@@ -278,7 +290,7 @@ private:
 #pragma endregion handlers
 
     void onStartHolding() {
-        bwSet(_state, IS_BEING_HELD, true);
+        BitWise.set(_state, IS_BEING_HELD, true);
         onHold();
     }
 
@@ -289,8 +301,8 @@ private:
 
     void onUp() {
         logger.info("button up");
-        bwSet(_state, IS_HIGH, false);
-        bwSet(_state, IS_BEING_HELD, false);
+        BitWise.set(_state, IS_HIGH, false);
+        BitWise.set(_state, IS_BEING_HELD, false);
 
         auto releaseTime = millis();
         if (getMillisDiff(releaseTime, _downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
@@ -306,25 +318,25 @@ struct ServoRotator: IReact {
 
     void open() {
         _servo.write(OPENED_DEGREES);
-        bwSet(state, IS_OPEN, true);
+        BitWise.set(state, IS_OPEN, true);
     }
 
     template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
         open();
-        bwSet(state, IS_TIMED, true);
+        BitWise.set(state, IS_TIMED, true);
         _openedTime = millis();
         _closeTimePeriodMs =  timePeriodMs;
     }
 
     void close() {
         logger.info("closing");
-        bwSet(state, IS_OPEN, false);
-        bwSet(state, IS_TIMED, false);
+        BitWise.set(state, IS_OPEN, false);
+        BitWise.set(state, IS_TIMED, false);
         _servo.write(CLOSED_DEGREES);
     }
 
     void react() override {
-        if (bwGet(state, IS_OPEN) && bwGet(state, IS_TIMED) && getMillisDiff(millis(), _openedTime) >= _closeTimePeriodMs) close();
+        if (BitWise.get(state, IS_OPEN) && BitWise.get(state, IS_TIMED) && getMillisDiff(millis(), _openedTime) >= _closeTimePeriodMs) close();
     }
 
 private:

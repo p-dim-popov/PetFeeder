@@ -10,7 +10,8 @@ template<class T> struct IComparable { virtual int8_t compareTo(const T*) const 
 template<class T> struct IEquatable { virtual bool equals(const T*) const = 0; };
 
 struct {
-    static void println(const char level, const char* arg, bool appendNewLine) {
+    template<class TInput>
+    static void println(const char level, const TInput arg, bool appendNewLine) {
         Serial.print(level);
         Serial.print("/");
         Serial.print(millis());
@@ -30,16 +31,20 @@ struct {
     uint8_t level = 3;
     bool debugOn = true;
 
-    void info(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void info(const TInput arg, bool appendNewLine = true) const {
         if (level >= 3) println('i', arg, appendNewLine);
     }
-    void warn(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void warn(const TInput arg, bool appendNewLine = true) const {
         if (level >= 2) println('w', arg, appendNewLine);
     }
-    void error(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void error(const TInput arg, bool appendNewLine = true) const {
         if (level >= 1) println('e', arg, appendNewLine);
     }
-    void debug(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void debug(const TInput arg, bool appendNewLine = true) const {
         if (debugOn) println('d', arg, appendNewLine);
     }
 } logger;

@@ -2,7 +2,7 @@
 
 #include <../.pio/libdeps/sparkfun_promicro16/Servo/src/Servo.h> // that include is bad...
 
-// TODO: Separate functionalities into private libraries
+// TODO: Separate functionalities into private libraries, pls soon...
 
 #define getMillisDiff(ms, prevMs) ((unsigned long)((ms) - (prevMs)))
 
@@ -59,6 +59,7 @@ struct {
     }
 } BitWise;
 
+// TODO: better comparison implementation
 struct Time: IEquatable<Time>, IComparable<Time> {
     uint8_t milliseconds = 0;
     uint8_t seconds = 0;

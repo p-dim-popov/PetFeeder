@@ -13,6 +13,8 @@ struct {
     static void println(const char level, const char* arg, bool appendNewLine) {
         Serial.print(level);
         Serial.print("/");
+        Serial.print(millis());
+        Serial.print("/");
         if (appendNewLine) Serial.println(arg);
         else Serial.print(arg);
     }
@@ -122,7 +124,47 @@ Time Time::started;
 uint32_t Time::prevMillis = 0;
 uint32_t Time::timeElapsed = 0;
 
-class IReact { virtual void react() = 0; };
+struct IReact { virtual void react() = 0; };
+
+template<typename TProps, typename TState>struct Component: IReact {
+    TProps props;
+    TState state;
+
+    Component(): props{}, state{} {}
+
+    virtual void componentDidUpdate(TProps prevProps, TState prevState) = 0;
+    virtual TProps getUpdatedProps(bool& shouldUpdate) = 0;
+
+    void setState(void(*transform)(TState& state)) {
+        transform(_nextState);
+        _shouldUpdate = true;
+    }
+
+    void setState(void(*transform)(TState& state, Component<TProps, TState>& context)) {
+        transform(_nextState, *this);
+        _shouldUpdate = true;
+    }
+
+    void react() override {
+        _shouldUpdate = false;
+        auto prevProps = props;
+        props = getUpdatedProps(_shouldUpdate);
+        if (!_shouldUpdate) return;
+        do {
+            _shouldUpdate = false;
+            auto prevState = state;
+            state = _nextState;
+            componentDidUpdate(prevProps, prevState);
+            prevProps = props;
+        } while(_shouldUpdate);
+
+        state = _nextState;
+    }
+
+private:
+    bool _shouldUpdate = false;
+    TState _nextState;
+};
 
 template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
     const Time time;
@@ -145,9 +187,10 @@ template<typename TItem, unsigned short size> struct Array {
 
     bool removeAt(int index) {
         if (!count || index < 0 || index >= count) return false;
-        for (auto i = index; i < count; ++i) {
-            list[i] = list[i + 1];
+        for (unsigned short i = index; i < count; ++i) {
+            list[i] = at(i + 1);
         }
+        count--;
         return true;
     }
 
@@ -158,7 +201,7 @@ template<typename TItem, unsigned short size> struct Array {
     }
 
     long indexOf(const IEquatable<TItem>* item) {
-        for (int i = 0; i < count; ++i) {
+        for (unsigned short i = 0; i < count; ++i) {
             const auto currentItem = list[i];
             if (item->equals(currentItem)) return i;
         }
@@ -221,7 +264,7 @@ template<typename TContext> struct DayJobsScheduler: IReact {
             _checkList = BitWise.set(
                     _checkList,
                     BitWise.indexAsBit<uint32_t>(i),
-                    BitWise.get(_checkList, BitWise.indexAsBit<uint32_t>(i + 1)
+                    ((i + 1) < prevCount) && BitWise.get(_checkList, BitWise.indexAsBit<uint32_t>(i + 1)
                     ));
         return true;
     }
@@ -242,7 +285,19 @@ struct Led {
     void toggle() const { digitalWrite(_pin, !isOn()); }
 };
 
-template<typename TContext> struct Button : IReact {
+struct ButtonProps {
+    unsigned long millis = 0;
+    bool isHigh = false;
+};
+
+struct ButtonState {
+    unsigned long downStartTime = 0;
+    bool isBeingHeld = false;
+    bool isHigh = false;
+    bool shouldCheckDownStartTime = false;
+};
+
+template<typename TContext> struct Button : Component<ButtonProps, ButtonState> {
     explicit Button(
             int pin,
             TContext& context,
@@ -259,24 +314,80 @@ template<typename TContext> struct Button : IReact {
         pinMode(pin, INPUT);
     }
 
-    void react() override {
-        auto prevIsHigh = BitWise.get(_state, IS_HIGH);
-        _state = BitWise.set(_state, IS_HIGH, digitalRead(_pin));
-        auto isHigh = BitWise.get(_state, IS_HIGH);
+     ButtonProps getUpdatedProps(bool& shouldUpdate) override {
+        auto nextProps = props;
 
-        if (!prevIsHigh && isHigh) onDown();
-        else if (prevIsHigh && isHigh && !BitWise.get(_state, IS_BEING_HELD) && (getMillisDiff(millis(), _downStartTime) > BUTTON_HOLD_DIFF_MS)) onStartHolding();
-        else if (prevIsHigh && !isHigh) onUp();
+        const auto currentMillis = millis();
+         if (getMillisDiff(currentMillis, props.millis)) {
+             nextProps.millis = currentMillis;
+             shouldUpdate = true;
+         }
+
+         const auto currentIsHigh = digitalRead(_pin);
+         if (currentIsHigh != props.isHigh) {
+             nextProps.isHigh = currentIsHigh;
+             shouldUpdate = true;
+         }
+
+        return nextProps;
+    }
+
+    void componentDidUpdate(ButtonProps prevProps, ButtonState prevState) override {
+        if (prevProps.isHigh != props.isHigh) {
+            if (props.isHigh) {
+                logger.debug("start down");
+                this->setState([](ButtonState& nextState, Component<ButtonProps, ButtonState>& context){
+                    nextState.downStartTime = context.props.millis;
+                });
+            } else {
+                this->setState([](ButtonState& nextState){
+                    nextState.isHigh = false;
+                });
+                logger.debug("end down");
+            }
+        }
+
+        if (prevState.downStartTime != state.downStartTime) {
+            logger.info("starting to check down time");
+            this->setState([](ButtonState& nextState){
+                nextState.shouldCheckDownStartTime = true;
+            });
+        }
+
+        if (state.shouldCheckDownStartTime && !state.isHigh && props.isHigh) {
+            if (getMillisDiff(props.millis, state.downStartTime) > BUTTON_CLICK_DIFF_MS) {
+                this->setState([](ButtonState& nextState){
+                    nextState.isHigh = true;
+                });
+            }
+        }
+
+        if (state.isHigh && (getMillisDiff(props.millis, state.downStartTime) > BUTTON_HOLD_DIFF_MS) && !state.isBeingHeld) {
+            this->setState([](ButtonState& nextState){
+                nextState.isBeingHeld = true;
+            });
+            onHold();
+        }
+
+        if (prevState.isHigh && !state.isHigh) {
+            logger.info("button up");
+            this->setState([](ButtonState& nextState){
+                nextState.isHigh = false;
+                nextState.isBeingHeld = false;
+                nextState.shouldCheckDownStartTime = false;
+            });
+
+            if (getMillisDiff(props.millis, state.downStartTime) < BUTTON_HOLD_DIFF_MS) onClick();
+            else onRelease();
+        }
     }
 
 private:
     static const uint16_t BUTTON_HOLD_DIFF_MS = 500;
-    static const uint8_t IS_HIGH = 0b00000001;
-    static const uint8_t IS_BEING_HELD = 0b00000010;
+    static const uint16_t BUTTON_CLICK_DIFF_MS = 50;
 
     int _pin = -1;
-    uint32_t _downStartTime = 0;
-    uint8_t _state = 0b00000000;
+
     TContext& _context;
 
 #pragma region handlers
@@ -295,26 +406,6 @@ private:
         if (_onRelease) _onRelease(_context);
     }
 #pragma endregion handlers
-
-    void onStartHolding() {
-        _state = BitWise.set(_state, IS_BEING_HELD, true);
-        onHold();
-    }
-
-    void onDown() {
-        _downStartTime = millis();
-        logger.info("button down");
-    }
-
-    void onUp() {
-        logger.info("button up");
-        _state = BitWise.set(_state, IS_HIGH, false);
-        _state = BitWise.set(_state, IS_BEING_HELD, false);
-
-        auto releaseTime = millis();
-        if (getMillisDiff(releaseTime, _downStartTime) <= BUTTON_HOLD_DIFF_MS) onClick();
-        else onRelease();
-    }
 };
 
 struct ServoRotator: IReact {
@@ -361,7 +452,7 @@ private:
 };
 
 struct Program {
-    DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ logger.debugOn = false; }};
+    DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ program.redLed.turnOn(); }};
     const Led redLed{13};
     ServoRotator servoRotator{9};
     Button<Program> rotatorButton{

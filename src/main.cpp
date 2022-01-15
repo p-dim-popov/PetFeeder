@@ -2,15 +2,24 @@
 
 #include <../.pio/libdeps/sparkfun_promicro16/Servo/src/Servo.h> // that include is bad...
 
-// TODO: Separate functionalities into private libraries
+// TODO: Separate functionalities into private libraries, pls soon...
 
 #define getMillisDiff(ms, prevMs) ((unsigned long)((ms) - (prevMs)))
 
-template<class T> struct IComparable { virtual int8_t compareTo(const T*) const = 0; };
-template<class T> struct IEquatable { virtual bool equals(const T*) const = 0; };
+template<typename T> struct IComparable { virtual int8_t compareTo(const T*) const = 0; };
+template<typename T> struct IEquatable { virtual bool equals(const T*) const = 0; };
 
+/**
+ * Levels:
+ *  - no logs 0
+ *  - error 1
+ *  - warn 2
+ *  - info 3
+ *  - debug
+ */
 struct {
-    static void println(const char level, const char* arg, bool appendNewLine) {
+    template<class TInput>
+    static void println(const char level, const TInput arg, bool appendNewLine) {
         Serial.print(level);
         Serial.print("/");
         Serial.print(millis());
@@ -19,27 +28,23 @@ struct {
         else Serial.print(arg);
     }
 
-    /**
-     * Levels:
-     *  - no logs 0
-     *  - error 1
-     *  - warn 2
-     *  - info 3
-     *  - debug
-     */
     uint8_t level = 3;
     bool debugOn = true;
 
-    void info(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void info(const TInput arg, bool appendNewLine = true) const {
         if (level >= 3) println('i', arg, appendNewLine);
     }
-    void warn(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void warn(const TInput arg, bool appendNewLine = true) const {
         if (level >= 2) println('w', arg, appendNewLine);
     }
-    void error(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void error(const TInput arg, bool appendNewLine = true) const {
         if (level >= 1) println('e', arg, appendNewLine);
     }
-    void debug(const char* arg = "", bool appendNewLine = true) const {
+    template<class TInput>
+    void debug(const TInput arg, bool appendNewLine = true) const {
         if (debugOn) println('d', arg, appendNewLine);
     }
 } logger;
@@ -59,6 +64,7 @@ struct {
     }
 } BitWise;
 
+// TODO: better comparison implementation
 struct Time: IEquatable<Time>, IComparable<Time> {
     uint8_t milliseconds = 0;
     uint8_t seconds = 0;
@@ -126,44 +132,29 @@ uint32_t Time::timeElapsed = 0;
 
 struct IReact { virtual void react() = 0; };
 
-template<typename TProps, typename TState>struct Component: IReact {
+template<typename TProps, typename TState>
+struct Component: IReact {
     TProps props;
     TState state;
 
     Component(): props{}, state{} {}
 
-    virtual void componentDidUpdate(TProps prevProps, TState prevState) = 0;
-    virtual TProps getUpdatedProps(bool& shouldUpdate) = 0;
-
-    void setState(void(*transform)(TState& state)) {
-        transform(_nextState);
-        _shouldUpdate = true;
-    }
-
-    void setState(void(*transform)(TState& state, Component<TProps, TState>& context)) {
-        transform(_nextState, *this);
-        _shouldUpdate = true;
-    }
+    virtual void componentDidUpdate(const TProps& prevProps, const TState& prevState, TState& nextState, bool& shouldUpdate) = 0;
+    virtual void getUpdatedProps(TProps& nextProps, bool& shouldUpdate) = 0;
 
     void react() override {
-        _shouldUpdate = false;
+        bool shouldUpdate = false;
         auto prevProps = props;
-        props = getUpdatedProps(_shouldUpdate);
-        if (!_shouldUpdate) return;
-        do {
-            _shouldUpdate = false;
+        getUpdatedProps(props, shouldUpdate);
+        auto nextState = state;
+        while (shouldUpdate) {
+            shouldUpdate = false;
             auto prevState = state;
-            state = _nextState;
-            componentDidUpdate(prevProps, prevState);
+            state = nextState;
+            componentDidUpdate(prevProps, prevState, nextState, shouldUpdate);
             prevProps = props;
-        } while(_shouldUpdate);
-
-        state = _nextState;
+        }
     }
-
-private:
-    bool _shouldUpdate = false;
-    TState _nextState;
 };
 
 template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
@@ -174,12 +165,42 @@ template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
     bool equals(const DayJob<TContext>* other) const override { return time.equals(&other->time); }
 };
 
-template<typename TItem, unsigned short size> struct Array {
-    TItem* list[size]{};
+template<typename TItem, uint8_t SIZE> struct StaticArray {
+    TItem list[SIZE]{};
+    uint8_t count = 0;
+    uint8_t size = SIZE;
+
+    virtual bool add(TItem item) {
+        if (count == SIZE) return false;
+
+        list[count++] = item;
+        return true;
+    }
+
+    const TItem* at(int16_t index) const {
+        if (index < 0 || index >= count) return nullptr;
+
+        return &(list[index]);
+    }
+
+    bool set(int16_t index, TItem item) {
+        if (index < 0 || index >= count) return false;
+        list[index] = item;
+        return true;
+    }
+};
+
+template<typename TItem, unsigned short SIZE> struct Array {
+    TItem* list[SIZE]{};
     unsigned short count = 0;
+    const unsigned short size = SIZE;
+
+    Array() = default;
+    Array(unsigned short count, TItem* items...): list{items}, count{count} {}
+    explicit Array(TItem* init[SIZE]): list{init} { for (int i = 0; i < SIZE && init[i]; ++i) count = i; }
 
     virtual bool add(TItem *item) {
-        if (count == size) return false;
+        if (count == SIZE) return false;
 
         list[count++] = item;
         return true;
@@ -194,10 +215,16 @@ template<typename TItem, unsigned short size> struct Array {
         return true;
     }
 
-    TItem* at(int index) {
+    TItem* at(int index) const {
         if (index < 0 || index >= count) return nullptr;
 
         return list[index];
+    }
+
+    bool set(int index, TItem* item) {
+        if (index < 0 || index >= count) return false;
+        list[index] = item;
+        return true;
     }
 
     long indexOf(const IEquatable<TItem>* item) {
@@ -216,6 +243,9 @@ template<typename TItem, unsigned short size> struct Array {
 
         return nullptr;
     }
+
+    TItem* begin(){return list[0];}
+    TItem* end(){return begin() + count;}
 };
 
 template<typename TItem, unsigned int size> struct Set: Array<TItem, size> {
@@ -285,6 +315,89 @@ struct Led {
     void toggle() const { digitalWrite(_pin, !isOn()); }
 };
 
+template<uint8_t bufferSize>
+struct StreamListenerProps {
+};
+
+template<uint8_t bufferSize>
+struct StreamListenerState {
+    StaticArray<char, bufferSize> buffer{};
+    bool shouldSendData = false;
+};
+
+template <typename TContext, uint8_t bufferSize = 20>
+struct StreamListener: Component<StreamListenerProps<bufferSize>, StreamListenerState<bufferSize>> {
+    StreamListener(
+            TContext& context,
+            Stream& stream,
+            void(*onInput)(TContext&, const char*),
+            const char* terminatingCharacters = "\r\n"
+        ):
+        _context{context},
+        _stream{stream},
+        _terminatingCharacters{terminatingCharacters},
+        _onInput{onInput}
+        {}
+
+    void getUpdatedProps(StreamListenerProps<bufferSize>& nextProps, bool& shouldUpdate) override {
+        shouldUpdate = _stream.available() > 0;
+    }
+
+    void componentDidUpdate(
+            const StreamListenerProps<bufferSize>& prevProps,
+            const StreamListenerState<bufferSize>& prevState,
+            StreamListenerState<bufferSize>& nextState,
+            bool& shouldUpdate
+        ) override {
+        if (_stream.available() > 0) {
+            bool hasBeenTerminated = false;
+
+            while (_stream.available() > 0) {
+                const char currentChar = _stream.read();
+
+                auto iter = _terminatingCharacters;
+                while (*iter) if (currentChar == *(iter++)) hasBeenTerminated = true;
+                if (hasBeenTerminated) {
+                    break;
+                }
+
+                const auto isAddSuccess = nextState.buffer.add(currentChar);
+                if (!isAddSuccess) {
+                    break;
+                }
+            }
+
+            if (this->state.buffer.count == this->state.buffer.size || hasBeenTerminated) {
+                if (this->state.buffer.count == this->state.buffer.size) {
+                    // TODO: empty the buffer maybe? undefined behaviour?
+                    nextState.buffer.set(nextState.buffer.size - 1, '\0');
+                } else if (hasBeenTerminated) {
+                    if (! nextState.buffer.add('\0')) nextState.buffer.set(nextState.buffer.size - 1, '\0');
+                }
+
+                nextState.shouldSendData = true;
+            }
+
+            shouldUpdate = true;
+        }
+
+        if (this->state.shouldSendData) {
+            nextState.shouldSendData = false;
+            onInput((const char *)(this->state.buffer.list));
+            nextState.buffer = StaticArray<char, bufferSize>{};
+            shouldUpdate = true;
+        }
+    }
+
+private:
+    TContext& _context;
+    Stream& _stream;
+    const char* _terminatingCharacters;
+
+    void (*_onInput)(TContext&, const char*);
+    void onInput(const char* value) { if (_onInput) _onInput(_context, value); }
+};
+
 struct ButtonProps {
     unsigned long millis = 0;
     bool isHigh = false;
@@ -314,9 +427,7 @@ template<typename TContext> struct Button : Component<ButtonProps, ButtonState> 
         pinMode(pin, INPUT);
     }
 
-     ButtonProps getUpdatedProps(bool& shouldUpdate) override {
-        auto nextProps = props;
-
+     void getUpdatedProps(ButtonProps& nextProps, bool& shouldUpdate) override {
         const auto currentMillis = millis();
          if (getMillisDiff(currentMillis, props.millis)) {
              nextProps.millis = currentMillis;
@@ -329,53 +440,51 @@ template<typename TContext> struct Button : Component<ButtonProps, ButtonState> 
              shouldUpdate = true;
          }
 
-        return nextProps;
     }
 
-    void componentDidUpdate(ButtonProps prevProps, ButtonState prevState) override {
+    void componentDidUpdate(
+            const ButtonProps &prevProps,
+            const ButtonState &prevState,
+            ButtonState &nextState,
+            bool &shouldUpdate
+        ) override {
         if (prevProps.isHigh != props.isHigh) {
             if (props.isHigh) {
                 logger.debug("start down");
-                this->setState([](ButtonState& nextState, Component<ButtonProps, ButtonState>& context){
-                    nextState.downStartTime = context.props.millis;
-                });
+                nextState.downStartTime = props.millis;
             } else {
-                this->setState([](ButtonState& nextState){
-                    nextState.isHigh = false;
-                });
+                nextState.isHigh = false;
                 logger.debug("end down");
             }
+
+            shouldUpdate = true;
         }
 
         if (prevState.downStartTime != state.downStartTime) {
             logger.info("starting to check down time");
-            this->setState([](ButtonState& nextState){
-                nextState.shouldCheckDownStartTime = true;
-            });
+            nextState.shouldCheckDownStartTime = true;
+            shouldUpdate = true;
         }
 
         if (state.shouldCheckDownStartTime && !state.isHigh && props.isHigh) {
             if (getMillisDiff(props.millis, state.downStartTime) > BUTTON_CLICK_DIFF_MS) {
-                this->setState([](ButtonState& nextState){
-                    nextState.isHigh = true;
-                });
+                nextState.isHigh = true;
+                shouldUpdate = true;
             }
         }
 
         if (state.isHigh && (getMillisDiff(props.millis, state.downStartTime) > BUTTON_HOLD_DIFF_MS) && !state.isBeingHeld) {
-            this->setState([](ButtonState& nextState){
-                nextState.isBeingHeld = true;
-            });
+            nextState.isBeingHeld = true;
+            shouldUpdate = true;
             onHold();
         }
 
         if (prevState.isHigh && !state.isHigh) {
             logger.info("button up");
-            this->setState([](ButtonState& nextState){
-                nextState.isHigh = false;
-                nextState.isBeingHeld = false;
-                nextState.shouldCheckDownStartTime = false;
-            });
+            nextState.isHigh = false;
+            nextState.isBeingHeld = false;
+            nextState.shouldCheckDownStartTime = false;
+            shouldUpdate = true;
 
             if (getMillisDiff(props.millis, state.downStartTime) < BUTTON_HOLD_DIFF_MS) onClick();
             else onRelease();
@@ -453,6 +562,14 @@ private:
 
 struct Program {
     DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ program.redLed.turnOn(); }};
+    StreamListener<Program, 20> streamListener{
+        *this,
+        Serial,
+        [](Program& program, const char* input){
+            logger.debug("received:");
+            logger.debug(input);
+        },
+    };
     const Led redLed{13};
     ServoRotator servoRotator{9};
     Button<Program> rotatorButton{
@@ -487,6 +604,7 @@ struct Program {
         rotatorButton.react();
         servoRotator.react();
         jobsScheduler.react();
+        streamListener.react();
         auto time = Time::now();
         String res;
         res.concat(time.hours);

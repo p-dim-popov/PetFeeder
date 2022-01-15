@@ -132,6 +132,7 @@ uint32_t Time::timeElapsed = 0;
 
 struct IReact { virtual void react() = 0; };
 
+// TODO: transform to functional component (react function, accepting transformer functions and a (static) object reference)
 template<typename TProps, typename TState>
 struct Component: IReact {
     TProps props;
@@ -140,12 +141,12 @@ struct Component: IReact {
     Component(): props{}, state{} {}
 
     virtual void componentDidUpdate(const TProps& prevProps, const TState& prevState, TState& nextState, bool& shouldUpdate) = 0;
-    virtual void getUpdatedProps(TProps& nextProps, bool& shouldUpdate) = 0;
+    virtual void updateProps(TProps& nextProps, bool& shouldUpdate) = 0;
 
     void react() override {
         bool shouldUpdate = false;
         auto prevProps = props;
-        getUpdatedProps(props, shouldUpdate);
+        updateProps(props, shouldUpdate);
         auto nextState = state;
         while (shouldUpdate) {
             shouldUpdate = false;
@@ -339,7 +340,7 @@ struct StreamListener: Component<StreamListenerProps<bufferSize>, StreamListener
         _onInput{onInput}
         {}
 
-    void getUpdatedProps(StreamListenerProps<bufferSize>& nextProps, bool& shouldUpdate) override {
+    void updateProps(StreamListenerProps<bufferSize>& nextProps, bool& shouldUpdate) override {
         shouldUpdate = _stream.available() > 0;
     }
 
@@ -427,7 +428,7 @@ template<typename TContext> struct Button : Component<ButtonProps, ButtonState> 
         pinMode(pin, INPUT);
     }
 
-     void getUpdatedProps(ButtonProps& nextProps, bool& shouldUpdate) override {
+     void updateProps(ButtonProps& nextProps, bool& shouldUpdate) override {
         const auto currentMillis = millis();
          if (getMillisDiff(currentMillis, props.millis)) {
              nextProps.millis = currentMillis;

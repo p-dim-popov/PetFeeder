@@ -71,6 +71,26 @@ struct Time: IEquatable<Time>, IComparable<Time> {
     uint8_t minutes = 0;
     uint8_t hours = 0;
 
+    Time& setMs(uint8_t ms) {
+        milliseconds = ms;
+        return *this;
+    }
+
+    Time& setSeconds(uint8_t secs) {
+        seconds = secs;
+        return *this;
+    }
+
+    Time& setMinutes(uint8_t mins) {
+        minutes = mins;
+        return *this;
+    }
+
+    Time& setHours(uint8_t hour) {
+        hours = hour;
+        return *this;
+    }
+
     uint32_t toMs() const {
         return (hours * 3600000) + (minutes * 60000) + (seconds * 1000) + milliseconds;
     }
@@ -159,9 +179,11 @@ struct Component: IReact {
 };
 
 template<typename TContext> struct DayJob: IEquatable<DayJob<TContext>> {
+    const bool isSystem;
     const Time time;
     void(*task)(TContext&);
-    explicit DayJob(const Time time, void(*task)(TContext&)): time{time}, task{task} {}
+    explicit DayJob(const Time time, void(*task)(TContext&), bool isSystem = false): isSystem{isSystem}, time{time}, task{task} {}
+    ~DayJob() = default;
 
     bool equals(const DayJob<TContext>* other) const override { return time.equals(&other->time); }
 };
@@ -299,6 +321,17 @@ template<typename TContext> struct DayJobsScheduler: IReact {
                     ));
         return true;
     }
+    bool unscheduleAndFree(int index) {
+        const auto isUnscheduled = unschedule(index);
+        if (!isUnscheduled) return false;
+
+        const auto job = _jobs.at(index);
+        delete job; // inspect this Clang warning
+
+        return true;
+    }
+
+    const Set<DayJob<TContext>, MAX_JOBS>& getJobs() const { return _jobs; }
 
 private:
     TContext& _context;
@@ -331,7 +364,7 @@ struct StreamListener: Component<StreamListenerProps<bufferSize>, StreamListener
     StreamListener(
             TContext& context,
             Stream& stream,
-            void(*onInput)(TContext&, const char*),
+            void(*onInput)(const char*, TContext&),
             const char* terminatingCharacters = "\r\n"
         ):
         _context{context},
@@ -395,8 +428,8 @@ private:
     Stream& _stream;
     const char* _terminatingCharacters;
 
-    void (*_onInput)(TContext&, const char*);
-    void onInput(const char* value) { if (_onInput) _onInput(_context, value); }
+    void (*_onInput)(const char*, TContext&);
+    void onInput(const char* value) { if (_onInput) _onInput(value, _context); }
 };
 
 struct ButtonProps {
@@ -561,14 +594,107 @@ private:
     uint32_t _closeTimePeriodMs = 0;
 };
 
+template<typename TContext, uint8_t BUFFER_SIZE>
+struct CommandInterpreter {
+    const struct CommandType {
+        const char* setTime = "sti";
+        const char* scheduleJob = "scj";
+        const char* getJobs = "gj";
+        const char* unscheduleJob = "usj";
+    } commands;
+
+    explicit CommandInterpreter(TContext& context): _context{context} {}
+
+    CommandInterpreter& setOnSetTimeListener(void(*onSetTime)(uint32_t timeMs, TContext& context)) {
+        _onSetTime = onSetTime;
+        return *this;
+    }
+
+    CommandInterpreter& setOnScheduleJobListener(void(*onScheduleJob)(uint8_t hour, uint8_t minutes, uint8_t secs, TContext& context)) {
+        _onScheduleJob = onScheduleJob;
+        return *this;
+    }
+
+    CommandInterpreter& setOnGetJobsListener(void(*onGetJobs)(TContext& context)) {
+        _onGetJobs = onGetJobs;
+        return *this;
+    }
+
+    CommandInterpreter& setOnUnscheduleJobListener(void(*onUnscheduleJob)(uint8_t id, TContext& context)) {
+        _onUnscheduleJob = onUnscheduleJob;
+        return *this;
+    }
+    static void split(char* input, uint8_t maxCount, char* output[]) {
+        input[BUFFER_SIZE - 1] = '\0';
+        uint8_t count = 0;
+        output[count++] = input;
+        for (int16_t i = 0; i < BUFFER_SIZE; ++i) {
+            if (input[i] == ',') {
+                input[i] = '\0';
+                output[count++] = &input[i + 1];
+                if (count == maxCount) break;
+            }
+        }
+    }
+
+    void interpret(const char* input, TContext& context) const {
+        char* argv[2]{};
+        char inputCopy[BUFFER_SIZE];
+        strncpy(inputCopy, input, BUFFER_SIZE);
+        split(inputCopy, 2, argv);
+
+        const char* command = argv[0];
+        char* payload = argv[1];
+
+        logger.info(command);
+
+        if (strcmp(command, commands.setTime) == 0) {
+            const auto timeMs = strtoul(payload, nullptr, 10);
+            onSetTime(timeMs);
+        } else if (strcmp(command, commands.scheduleJob) == 0) {
+            char* commandArgs[3];
+            split(payload, 3, commandArgs);
+            const uint8_t hour = strtol(commandArgs[0], nullptr, 10);
+            const uint8_t minutes = strtol(commandArgs[1], nullptr, 10);
+            const uint8_t secs = strtol(commandArgs[2], nullptr, 10);
+            onScheduleJob(hour, minutes, secs);
+        } else if (strcmp(command, commands.unscheduleJob) == 0) {
+            const uint8_t id = strtol(payload, nullptr, 10);
+            onUnscheduleJob(id);
+        } else if (strcmp(command, commands.getJobs) == 0) {
+            onGetJobs();
+        } else {
+            logger.debug("command not matched");
+        }
+    }
+
+private:
+    TContext &_context;
+
+    void (*_onSetTime)(uint32_t, TContext &);
+    void onSetTime(uint32_t timeMs) const { if (_onSetTime) _onSetTime(timeMs, _context); }
+
+    void (*_onScheduleJob)(uint8_t hour, uint8_t minutes, uint8_t secs, TContext& context);
+    void onScheduleJob(uint8_t hour, uint8_t minutes, uint8_t secs) const { if(_onScheduleJob) _onScheduleJob(hour, minutes, secs, _context); }
+
+    void (*_onUnscheduleJob)(uint8_t id, TContext& context);
+    void onUnscheduleJob(uint8_t id) const { if(_onUnscheduleJob) _onUnscheduleJob(id, _context); }
+
+    void (*_onGetJobs)(TContext &);
+    void onGetJobs() const { if(_onGetJobs) _onGetJobs(_context); }
+};
+
 struct Program {
-    DayJob<Program> testJob{Time::fromMs(Time::now().toMs() + 5000), [](Program& program){ program.redLed.turnOn(); }};
+    DayJob<Program> testJob{
+        Time::fromMs(Time::now().toMs() + 5000),
+        [](Program& program){ program.redLed.turnOn(); },
+        true
+    };
     StreamListener<Program, 20> streamListener{
         *this,
         Serial,
-        [](Program& program, const char* input){
-            logger.debug("received:");
-            logger.debug(input);
+        [](const char* input, Program& program) {
+            program.commandInterpreter.interpret(input, program);
         },
     };
     const Led redLed{13};
@@ -596,6 +722,33 @@ struct Program {
             }
     };
     DayJobsScheduler<Program> jobsScheduler{*this};
+    CommandInterpreter<Program, 20> commandInterpreter = CommandInterpreter<Program, 20>{*this}
+            .setOnSetTimeListener([](uint32_t timeMs, Program &context) {
+                Time::set(Time::fromMs(timeMs));
+            })
+            .setOnScheduleJobListener([](uint8_t hour, uint8_t minutes, uint8_t secs, Program &context) {
+                context.jobsScheduler.schedule(new DayJob<Program>{
+                        Time().setHours(hour).setMinutes(minutes).setSeconds(secs),
+                        [](Program &program) {
+                            program.servoRotator.openTimed(1000);
+                        }
+                });
+            })
+            .setOnGetJobsListener([](Program& context){
+                const auto jobs = context.jobsScheduler.getJobs();
+                for (int i = 0; i < jobs.count; ++i) {
+                    const auto currentJob = jobs.at(i);
+                    logger.debug(i);
+                    logger.debug(currentJob->isSystem ? "system job" : "user job");
+                    logger.debug("");
+                }
+
+                if (!jobs.count) { logger.debug("no jobs scheduled"); }
+            })
+            .setOnUnscheduleJobListener([](uint8_t id, Program& context){
+                logger.debug(context.jobsScheduler.unscheduleAndFree(id) ? "unscheduled" : "failed to unschedule");
+            });
+
 
     Program() {
         Serial.begin(9600);

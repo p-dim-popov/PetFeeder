@@ -19,45 +19,46 @@ template<typename T> struct IEquatable { virtual bool equals(const T*) const = 0
  */
 struct {
     template<class TInput>
-    static void println(const char level, const TInput arg, bool appendNewLine) {
-        Serial.print(level);
-        Serial.print("/");
-        Serial.print(millis());
-        Serial.print("/");
-        if (appendNewLine) Serial.println(arg);
-        else Serial.print(arg);
+    constexpr static size_t println(const char level, const TInput arg, bool appendNewLine) {
+        return Serial.print(level)
+        + Serial.print("/")
+        + Serial.print(millis())
+        + Serial.print("/")
+        + (appendNewLine ? Serial.println(arg) : Serial.print(arg));
     }
 
     uint8_t level = 3;
     bool debugOn = true;
 
     template<class TInput>
-    void info(const TInput arg, bool appendNewLine = true) const {
-        if (level >= 3) println('i', arg, appendNewLine);
+    constexpr size_t info(const TInput arg, bool appendNewLine = true) const {
+        return (level >= 3) && println('i', arg, appendNewLine);
     }
     template<class TInput>
-    void warn(const TInput arg, bool appendNewLine = true) const {
-        if (level >= 2) println('w', arg, appendNewLine);
+    constexpr size_t warn(const TInput arg, bool appendNewLine = true) const {
+        return (level >= 2) && println('w', arg, appendNewLine);
     }
     template<class TInput>
-    void error(const TInput arg, bool appendNewLine = true) const {
-        if (level >= 1) println('e', arg, appendNewLine);
+    constexpr size_t error(const TInput arg, bool appendNewLine = true) const {
+        return (level >= 1) && println('e', arg, appendNewLine);
     }
     template<class TInput>
-    void debug(const TInput arg, bool appendNewLine = true) const {
-        if (debugOn) println('d', arg, appendNewLine);
+    constexpr size_t debug(const TInput arg, bool appendNewLine = true) const {
+        return (debugOn) && println('d', arg, appendNewLine);
     }
 } logger;
 
 struct {
     template<typename TBus>
-    bool get(TBus state, TBus stateBit) { return state & stateBit; }
+    constexpr bool get(TBus state, TBus stateBit) const { return state & stateBit; }
+
     template<typename TBus>
-    TBus set(TBus state, TBus stateBit, bool value) {
+    constexpr TBus set(TBus state, TBus stateBit, bool value) const {
         return (value) ? state | stateBit : state & ~stateBit;
     }
+
     template<typename TBus, typename TIndex>
-    TBus indexAsBit(TIndex index) {
+    TBus indexAsBit(TIndex index) const {
         TBus result = 1;
         for (TIndex i = 0; i < index; i++) result *= 2;
         return result;
@@ -238,10 +239,10 @@ template<typename TItem, unsigned short SIZE> struct Array {
         return true;
     }
 
-    TItem* at(int index) const {
-        if (index < 0 || index >= count) return nullptr;
-
-        return list[index];
+    constexpr TItem* at(int index) const {
+        return (index < 0 || index >= count)
+            ? nullptr
+            : list[index];
     }
 
     bool set(int index, TItem* item) {
@@ -343,7 +344,7 @@ struct Led {
     int _pin;
     explicit Led(int pin): _pin(pin) { pinMode(pin, OUTPUT); }
 
-    bool isOn() const { return digitalRead(_pin); }
+    constexpr bool isOn() const { return digitalRead(_pin); }
     void turnOn() const { digitalWrite(_pin, HIGH); }
     void turnOff() const { digitalWrite(_pin, LOW); }
     void toggle() const { digitalWrite(_pin, !isOn()); }
@@ -562,7 +563,8 @@ struct ServoRotator: IReact {
         state = BitWise.set(state, IS_OPEN, true);
     }
 
-    template<typename TTimePeriodMs = uint16_t> void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
+    template<typename TTimePeriodMs = uint16_t>
+    void openTimed(TTimePeriodMs timePeriodMs = DEFAULT_OPEN_TIME_MS) {
         open();
         state = BitWise.set(state, IS_TIMED, true);
         _openedTime = millis();
